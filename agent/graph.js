@@ -58,7 +58,7 @@ async function extractRequestInfo(state) {
       orderId: result.orderId?.toUpperCase() || null,
       traceSteps: [
         {
-          step: "gemini_extract_request_info",
+          step: "llm_extract_request_info",
           input: {
             userMessage: state.userMessage
           },
@@ -296,7 +296,7 @@ async function generateResponseNode(state) {
       },
       traceSteps: [
         {
-          step: "gemini_generate_response",
+          step: "llm_generate_response",
           input: {
             decision: state.decision,
             reason: state.reason,
@@ -322,7 +322,7 @@ Reason: ${state.reason}`;
       response: fallbackResponse,
       traceSteps: [
         {
-          step: "gemini_generate_response",
+          step: "llm_generate_response",
           input: {
             decision: state.decision,
             reason: state.reason

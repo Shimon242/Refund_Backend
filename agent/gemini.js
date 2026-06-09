@@ -7,7 +7,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 });
 
-const CLAUDE_MODEL = "claude-3-5-haiku-latest";
+const CLAUDE_MODEL = "claude-3-5-haiku-20241022";
 
 function getClaudeText(response) {
   return response.content
