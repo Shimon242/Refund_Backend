@@ -1,17 +1,57 @@
 import dotenv from "dotenv";
-import { GoogleGenAI } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 
 dotenv.config();
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
 });
 
+const CLAUDE_MODEL = "claude-3-5-haiku-latest";
+
+function getClaudeText(response) {
+  return response.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
+
+function extractJson(text) {
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+
+  if (firstBrace === -1 || lastBrace === -1) {
+    throw new Error("Claude did not return JSON.");
+  }
+
+  return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+}
+
+function fallbackExtract(userMessage) {
+  const emailMatch = userMessage.match(
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
+  );
+
+  const orderMatch = userMessage.match(/ORD-\d+/i);
+
+  return {
+    customerEmail: emailMatch ? emailMatch[0] : null,
+    orderId: orderMatch ? orderMatch[0].toUpperCase() : null
+  };
+}
+
 export async function extractRefundInfo(userMessage) {
+  const fallback = fallbackExtract(userMessage);
+
   const prompt = `
 Extract the customer email and order ID from this refund request.
 
-Return ONLY valid JSON. No markdown. No explanation.
+Important:
+- "another refund" does not mean there is another order.
+- Use the explicit order ID if one is present.
+- Return ONLY valid JSON. No markdown. No explanation.
 
 Format:
 {
@@ -23,25 +63,42 @@ Customer message:
 ${userMessage}
 `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt
-  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 300,
+        temperature: 0,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ]
+      });
 
-  const text = response.text.trim();
-  const cleaned = text.replace(/```json|```/g, "").trim();
+      const text = getClaudeText(response);
+      const parsed = extractJson(text);
 
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const emailMatch = userMessage.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    const orderMatch = userMessage.match(/ORD-\d+/i);
+      return {
+        customerEmail: parsed.customerEmail || fallback.customerEmail,
+        orderId: parsed.orderId || fallback.orderId
+      };
+    } catch (error) {
+      console.error(
+        `Claude extractRefundInfo attempt ${attempt} failed:`,
+        error.message
+      );
 
-    return {
-      customerEmail: emailMatch ? emailMatch[0] : null,
-      orderId: orderMatch ? orderMatch[0].toUpperCase() : null
-    };
+      if (attempt === 3) {
+        return fallback;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+    }
   }
+
+  return fallback;
 }
 
 export async function generateCustomerResponse({
@@ -72,18 +129,31 @@ Card Last Four: ${order?.card_last_four || "N/A"}
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt
+      const response = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 500,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "user",
+            content: prompt
+          }
+        ]
       });
 
       return {
-        text: response.text.trim(),
-        usageMetadata: response.usageMetadata || null
+        text: getClaudeText(response),
+        usageMetadata: {
+          promptTokenCount: response.usage?.input_tokens || 0,
+          candidatesTokenCount: response.usage?.output_tokens || 0,
+          totalTokenCount:
+            (response.usage?.input_tokens || 0) +
+            (response.usage?.output_tokens || 0)
+        }
       };
     } catch (error) {
       console.error(
-        `Gemini generateCustomerResponse attempt ${attempt} failed:`,
+        `Claude generateCustomerResponse attempt ${attempt} failed:`,
         error.message
       );
 
@@ -91,9 +161,7 @@ Card Last Four: ${order?.card_last_four || "N/A"}
         throw error;
       }
 
-      await new Promise((resolve) =>
-        setTimeout(resolve, attempt * 2000)
-      );
+      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
     }
   }
 }
